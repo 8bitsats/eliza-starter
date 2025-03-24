@@ -9,6 +9,7 @@ import {
 import { bootstrapPlugin } from "@elizaos/plugin-bootstrap";
 import { createNodePlugin } from "@elizaos/plugin-node";
 import { solanaPlugin } from "@elizaos/plugin-solana";
+// We'll load the ordinals plugin dynamically
 import fs from "fs";
 import net from "net";
 import path from "path";
@@ -35,7 +36,7 @@ export const wait = (minTime: number = 1000, maxTime: number = 3000) => {
 
 let nodePlugin: any | undefined;
 
-export function createAgent(
+export async function createAgent(
   character: Character,
   db: any,
   cache: any,
@@ -48,6 +49,55 @@ export function createAgent(
   );
 
   nodePlugin ??= createNodePlugin();
+  
+  // Check if the character has the ordinals plugin in its plugins array
+  const hasOrdinalsPlugin = Array.isArray(character.plugins) && 
+    character.plugins.some((plugin) => typeof plugin === "string" && plugin === "@elizaos/plugin-ordinals");
+  
+  // Dynamically load the ordinals plugin if needed
+  let ordinalsPluginInstance = null;
+  if (hasOrdinalsPlugin) {
+    try {
+      // Try multiple possible locations for the ordinals plugin
+      const possiblePaths = [
+        path.resolve(__dirname, "../plugins/ordinals/index.js"), // Local copy in eliza-starter
+        path.resolve(__dirname, "../../plugins/ordinals/dist/index.js"), // Root project plugins
+        path.resolve(__dirname, "../node_modules/@elizaos/plugin-ordinals/dist/index.js") // npm linked version
+      ];
+      
+      let ordinalsModule = null;
+      let loadedPath = null;
+      
+      // Try each path until we find one that works
+      for (const modulePath of possiblePaths) {
+        try {
+          if (fs.existsSync(modulePath)) {
+            ordinalsModule = await import(modulePath);
+            loadedPath = modulePath;
+            break;
+          }
+        } catch (e) {
+          // Continue to next path
+        }
+      }
+      
+      if (!ordinalsModule) {
+        throw new Error("Could not find Ordinals plugin in any expected location");
+      }
+      
+      elizaLogger.debug(`Successfully loaded Ordinals plugin from: ${loadedPath}`);
+      ordinalsPluginInstance = ordinalsModule.ordinalsPlugin;
+      
+      if (!ordinalsPluginInstance) {
+        elizaLogger.warn("Ordinals plugin loaded but 'ordinalsPlugin' export not found");
+      } else {
+        elizaLogger.success("Successfully loaded Ordinals plugin");
+      }
+    } catch (error) {
+      elizaLogger.error("Failed to load Ordinals plugin:", error);
+      elizaLogger.error("Error details:", error);
+    }
+  }
 
   return new AgentRuntime({
     databaseAdapter: db,
@@ -59,6 +109,7 @@ export function createAgent(
       bootstrapPlugin,
       nodePlugin,
       character.settings?.secrets?.WALLET_PUBLIC_KEY ? solanaPlugin : null,
+      ordinalsPluginInstance,
     ].filter(Boolean),
     providers: [],
     actions: [],
@@ -85,7 +136,7 @@ async function startAgent(character: Character, directClient: DirectClient) {
     await db.init();
 
     const cache = initializeDbCache(character, db);
-    const runtime = createAgent(character, db, cache, token);
+    const runtime = await createAgent(character, db, cache, token);
 
     await runtime.initialize();
 
@@ -128,7 +179,7 @@ const checkPortAvailable = (port: number): Promise<boolean> => {
 
 const startAgents = async () => {
   const directClient = new DirectClient();
-  let serverPort = parseInt(settings.SERVER_PORT || "3000");
+  let serverPort = parseInt(settings.SERVER_PORT || "3002");
   const args = parseArguments();
 
   let charactersArg = args.characters || args.character;
@@ -160,7 +211,7 @@ const startAgents = async () => {
 
   directClient.start(serverPort);
 
-  if (serverPort !== parseInt(settings.SERVER_PORT || "3000")) {
+  if (serverPort !== parseInt(settings.SERVER_PORT || "3002")) {
     elizaLogger.log(`Server started on alternate port ${serverPort}`);
   }
 
